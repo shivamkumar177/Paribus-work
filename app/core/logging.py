@@ -15,6 +15,8 @@ def setup_logging() -> logging.Logger:
 
     # Suppress noisy third-party loggers
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
     logger = logging.getLogger(settings.APP_NAME)
     return logger
