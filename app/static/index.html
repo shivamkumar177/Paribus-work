@@ -1,0 +1,636 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CSV Bulk Upload</title>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --panel: #171a21;
+      --panel-2: #1e222b;
+      --border: #2a2f3a;
+      --text: #e7e9ee;
+      --muted: #8b93a4;
+      --accent: #4f8cff;
+      --accent-2: #3bd1a0;
+      --danger: #ff5c6a;
+      --warn: #ffb454;
+      --radius: 12px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: radial-gradient(1200px 600px at 50% -10%, #1b2130 0%, var(--bg) 60%);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 40px 20px 80px;
+    }
+    .wrap { max-width: 880px; margin: 0 auto; }
+    header h1 { font-size: 26px; margin: 0 0 6px; letter-spacing: -0.02em; }
+    header p { color: var(--muted); margin: 0 0 28px; font-size: 14px; }
+    .card {
+      background: linear-gradient(180deg, var(--panel) 0%, var(--panel-2) 100%);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 22px;
+      margin-bottom: 20px;
+    }
+    .drop {
+      border: 1.5px dashed var(--border);
+      border-radius: var(--radius);
+      padding: 34px 20px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color .15s, background .15s;
+    }
+    .drop:hover, .drop.over { border-color: var(--accent); background: rgba(79,140,255,.06); }
+    .drop strong { display: block; font-size: 15px; margin-bottom: 4px; }
+    .drop span { color: var(--muted); font-size: 13px; }
+    .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    .row.between { justify-content: space-between; }
+    label.small { color: var(--muted); font-size: 12px; display: block; margin-bottom: 4px; }
+    select, input[type="search"] {
+      background: #0d1016; color: var(--text); border: 1px solid var(--border);
+      border-radius: 8px; padding: 8px 10px; font-size: 13px;
+    }
+    button {
+      background: var(--accent); color: white; border: 0; border-radius: 9px;
+      padding: 10px 16px; font-size: 14px; font-weight: 600; cursor: pointer;
+      transition: filter .15s, opacity .15s;
+    }
+    button:hover { filter: brightness(1.1); }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    button.ghost { background: transparent; border: 1px solid var(--border); color: var(--text); }
+    button.danger { background: var(--danger); }
+    .file-meta { font-size: 13px; color: var(--muted); margin-top: 14px; }
+    .file-meta b { color: var(--text); }
+    .bar { height: 10px; background: #0d1016; border-radius: 999px; overflow: hidden; margin: 16px 0 8px; border: 1px solid var(--border); }
+    .bar > i { display: block; height: 100%; width: 0%; background: linear-gradient(90deg, var(--accent), var(--accent-2)); transition: width .2s; }
+    .stat-row { display: flex; gap: 20px; flex-wrap: wrap; font-size: 13px; }
+    .stat b { color: var(--accent-2); }
+    .badge { font-size: 11px; padding: 3px 9px; border-radius: 999px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+    .s-pending { background: #2b3040; color: var(--muted); }
+    .s-uploading { background: rgba(79,140,255,.18); color: var(--accent); }
+    .s-completed { background: rgba(59,209,160,.16); color: var(--accent-2); }
+    .s-failed { background: rgba(255,92,106,.16); color: var(--danger); }
+    .s-processing, .s-assembling { background: rgba(255,180,84,.16); color: var(--warn); }
+    .log { margin-top: 16px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--muted); max-height: 180px; overflow: auto; }
+    .log div { padding: 2px 0; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+    th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .03em; }
+    .table-scroll { overflow-x: auto; margin-top: 14px; border: 1px solid var(--border); border-radius: 10px; }
+    .sessions .s-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+    .sessions .s-row:last-child { border-bottom: 0; }
+    .sessions .fname { font-size: 13px; }
+    .sessions .fname small { color: var(--muted); display: block; }
+    .hidden { display: none !important; }
+    h2 { font-size: 15px; margin: 0 0 4px; }
+    h2 + .sub { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>CSV Bulk Upload</h1>
+      <p>Chunked, resumable CSV upload with in-memory storage. Disconnect anytime — uploads resume where they left off.</p>
+    </header>
+
+    <div class="card">
+      <div id="drop" class="drop">
+        <strong id="dropTitle">Drop a CSV here or click to browse</strong>
+        <span id="dropSub">Only .csv files · processed server-side</span>
+        <input id="file" type="file" accept=".csv,text/csv" class="hidden" />
+      </div>
+
+      <div id="meta" class="file-meta hidden"></div>
+
+      <div class="row between" style="margin-top:18px;">
+        <div>
+          <label class="small" for="chunkSize">Chunk size</label>
+          <select id="chunkSize">
+            <option value="65536">64 KB</option>
+            <option value="262144">256 KB</option>
+            <option value="1048576" selected>1 MB</option>
+            <option value="5242880">5 MB</option>
+          </select>
+        </div>
+        <div class="row">
+          <button id="uploadBtn" disabled>Start upload</button>
+          <button id="pauseBtn" class="ghost hidden">Pause</button>
+          <button id="resetBtn" class="ghost">Reset</button>
+        </div>
+      </div>
+
+      <div id="progressWrap" class="hidden">
+        <div class="bar"><i id="barFill"></i></div>
+        <div class="row between">
+          <div class="stat-row">
+            <span class="stat">Progress <b id="pct">0%</b></span>
+            <span class="stat">Uploaded <b id="doneCnt">0</b>/<b id="totalCnt">0</b> chunks</span>
+            <span class="stat">Missing <b id="missCnt">0</b></span>
+            <span class="stat">Status <span id="statusBadge" class="badge s-pending">pending</span></span>
+          </div>
+          <span id="uploadId" class="file-meta"></span>
+        </div>
+        <div id="log" class="log"></div>
+      </div>
+    </div>
+
+    <div id="resultCard" class="card hidden">
+      <div class="row between">
+        <div>
+          <h2 id="resTitle">Upload complete</h2>
+          <div class="sub" id="resSub"></div>
+        </div>
+        <input id="search" type="search" placeholder="Search rows…" />
+      </div>
+      <div class="table-scroll">
+        <table id="dataTable"><thead></thead><tbody></tbody></table>
+      </div>
+      <div class="row between" style="margin-top:12px;">
+        <button id="prevBtn" class="ghost" disabled>Prev</button>
+        <span id="pageInfo" class="file-meta"></span>
+        <button id="nextBtn" class="ghost" disabled>Next</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="row between">
+        <h2>Hospital Bulk Processing</h2>
+        <span class="file-meta">CSV: name,address,phone (phone optional) · max 20 rows</span>
+      </div>
+      <div class="sub">Uploads each hospital to the directory, then activates the whole batch.</div>
+
+      <div id="hDrop" class="drop" style="margin-top:16px;">
+        <strong id="hDropTitle">Drop a hospital CSV or click to browse</strong>
+        <span id="hDropSub">columns: name, address, phone</span>
+        <input id="hFile" type="file" accept=".csv,text/csv" class="hidden" />
+      </div>
+      <div id="hMeta" class="file-meta hidden"></div>
+
+      <div class="row" style="margin-top:16px;">
+        <button id="hProcessBtn" disabled>Process batch</button>
+        <button id="hValidateBtn" class="ghost" disabled>Validate only</button>
+        <button id="hResumeBtn" class="ghost hidden">Resume last batch</button>
+      </div>
+      <div id="hStatus" class="file-meta"></div>
+
+      <div id="hResultCard" class="hidden" style="margin-top:18px;">
+        <div class="row between">
+          <div class="stat-row">
+            <span class="stat">Batch <b id="hBatchId">-</b></span>
+            <span class="stat">Processed <b id="hProcessed">0</b>/<b id="hTotal">0</b></span>
+            <span class="stat">Failed <b id="hFailed">0</b></span>
+            <span class="stat">Time <b id="hTime">-</b>s</span>
+            <span class="stat">Activated <b id="hActivated">-</b></span>
+          </div>
+          <span id="hBadge" class="badge s-pending">pending</span>
+        </div>
+        <div class="table-scroll">
+          <table id="hTable"><thead></thead><tbody></tbody></table>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="row between">
+        <h2>Batch jobs</h2>
+        <button id="hRefresh" class="ghost">Refresh</button>
+      </div>
+      <div id="hBatches" class="sessions"><div class="file-meta">Loading…</div></div>
+    </div>
+
+    <div class="card">
+      <div class="row between">
+        <h2>Upload sessions</h2>
+        <button id="refreshBtn" class="ghost">Refresh</button>
+      </div>
+      <div id="sessions" class="sessions"><div class="file-meta">Loading…</div></div>
+    </div>
+  </div>
+
+  <script>
+    const API = "/api/v1";
+    const $ = (id) => document.getElementById(id);
+    const RESUME_KEY = "csv-upload-sessions";
+
+    let file = null;
+    let chunkSize = 1048576;
+    let uploadId = null;
+    let totalChunks = 0;
+    let uploaded = new Set();
+    let paused = false;
+    let uploading = false;
+    let page = 1;
+    let pageSize = 25;
+    let columns = [];
+    let currentSearch = "";
+
+    // ── Session persistence (resume across reloads) ──────────────────────────
+    const sessions = () => JSON.parse(localStorage.getItem(RESUME_KEY) || "{}");
+    const saveSession = (key, val) => { const s = sessions(); s[key] = val; localStorage.setItem(RESUME_KEY, JSON.stringify(s)); };
+    const dropSession = (key) => { const s = sessions(); delete s[key]; localStorage.setItem(RESUME_KEY, JSON.stringify(s)); };
+    const fileKey = (f) => `${f.name}::${f.size}::${f.lastModified}`;
+
+    // ── UI helpers ───────────────────────────────────────────────────────────
+    function log(msg) {
+      const el = $("log");
+      const line = document.createElement("div");
+      line.textContent = `${new Date().toLocaleTimeString()}  ${msg}`;
+      el.appendChild(line);
+      el.scrollTop = el.scrollHeight;
+    }
+    function setStatus(status) {
+      const b = $("statusBadge");
+      b.textContent = status;
+      b.className = `badge s-${status}`;
+    }
+    function fmtBytes(n) {
+      if (n < 1024) return `${n} B`;
+      if (n < 1048576) return `${(n / 1024).toFixed(1)} KB`;
+      return `${(n / 1048576).toFixed(2)} MB`;
+    }
+    function renderProgress() {
+      const done = uploaded.size;
+      const pct = totalChunks ? Math.round(done / totalChunks * 100) : 0;
+      $("barFill").style.width = `${pct}%`;
+      $("pct").textContent = `${pct}%`;
+      $("doneCnt").textContent = done;
+      $("totalCnt").textContent = totalChunks;
+      $("missCnt").textContent = totalChunks - done;
+    }
+
+    // ── File selection ───────────────────────────────────────────────────────
+    $("drop").addEventListener("click", () => $("file").click());
+    $("file").addEventListener("change", (e) => { if (e.target.files[0]) selectFile(e.target.files[0]); });
+    ["dragenter", "dragover"].forEach(ev => $("drop").addEventListener(ev, (e) => { e.preventDefault(); $("drop").classList.add("over"); }));
+    ["dragleave", "drop"].forEach(ev => $("drop").addEventListener(ev, (e) => { e.preventDefault(); $("drop").classList.remove("over"); }));
+    $("drop").addEventListener("drop", (e) => { const f = e.dataTransfer.files[0]; if (f) selectFile(f); });
+
+    $("chunkSize").addEventListener("change", (e) => { chunkSize = parseInt(e.target.value, 10); if (file) selectFile(file); });
+
+    function selectFile(f) {
+      if (!f.name.toLowerCase().endsWith(".csv")) { alert("Please choose a .csv file."); return; }
+      file = f;
+      chunkSize = parseInt($("chunkSize").value, 10);
+      totalChunks = Math.max(1, Math.ceil(f.size / chunkSize));
+      uploaded = new Set();
+      uploadId = null;
+      $("meta").classList.remove("hidden");
+      $("meta").innerHTML = `<b>${f.name}</b> · ${fmtBytes(f.size)} · ${totalChunks} chunk(s) @ ${fmtBytes(chunkSize)}`;
+      $("dropTitle").textContent = f.name;
+      $("dropSub").textContent = "Click to choose a different file";
+      $("uploadBtn").disabled = false;
+      $("progressWrap").classList.remove("hidden");
+      $("resultCard").classList.add("hidden");
+      $("log").innerHTML = "";
+      $("uploadId").textContent = "";
+      setStatus("pending");
+      renderProgress();
+
+      const saved = sessions()[fileKey(f)];
+      if (saved) log(`Found saved session ${saved.uploadId.slice(0, 8)}… — will resume.`);
+    }
+
+    // ── Core upload flow ─────────────────────────────────────────────────────
+    async function initiate() {
+      const res = await fetch(`${API}/uploads/initiate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: file.name, file_size: file.size, total_chunks: totalChunks, chunk_size: chunkSize }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || "Failed to initiate upload");
+      uploadId = data.upload_id;
+      uploaded = new Set(data.received_chunks);
+      saveSession(fileKey(file), { uploadId, filename: file.name, fileSize: file.size, lastModified: file.lastModified, chunkSize });
+      $("uploadId").textContent = `id: ${uploadId}`;
+      log(`Session created: ${uploadId}`);
+      return data;
+    }
+
+    async function resumeInfo(id) {
+      const res = await fetch(`${API}/uploads/${id}/resume`);
+      if (res.status === 404) return null;
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || "Failed to fetch resume info");
+      return data;
+    }
+
+    async function uploadChunk(index) {
+      const start = index * chunkSize;
+      const blob = file.slice(start, start + chunkSize);
+      const form = new FormData();
+      form.append("chunk_index", String(index));
+      form.append("file", blob, `${file.name}.part${index}`);
+      const res = await fetch(`${API}/uploads/${uploadId}/chunk`, { method: "POST", body: form });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || `Chunk ${index} failed`);
+      uploaded = new Set(data.received_chunks);
+      setStatus(data.progress_pct >= 100 ? "uploading" : "uploading");
+      renderProgress();
+      return data;
+    }
+
+    async function complete() {
+      setStatus("processing");
+      log("All chunks received — assembling & parsing…");
+      const res = await fetch(`${API}/uploads/${uploadId}/complete`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || "Failed to complete upload");
+      setStatus("completed");
+      log(`Done — ${data.row_count} row(s), columns: ${(data.columns || []).join(", ")}`);
+      dropSession(fileKey(file));
+      showResult(data);
+      loadSessions();
+    }
+
+    async function runUpload() {
+      if (uploading || !file) return;
+      uploading = true; paused = false;
+      $("uploadBtn").disabled = true;
+      $("pauseBtn").classList.remove("hidden");
+      $("resetBtn").disabled = true;
+
+      try {
+        const key = fileKey(file);
+        const saved = sessions()[key];
+        if (saved) {
+          const info = await resumeInfo(saved.uploadId);
+          if (info) {
+            uploadId = info.upload_id;
+            uploaded = new Set(info.received_chunks);
+            totalChunks = info.total_chunks;
+            $("uploadId").textContent = `id: ${uploadId}`;
+            log(`Resuming ${uploadId} — ${info.missing_chunks.length} chunk(s) missing.`);
+          } else {
+            log("Saved session not found on server — starting fresh.");
+            dropSession(key);
+            await initiate();
+          }
+        } else {
+          await initiate();
+        }
+        setStatus("uploading");
+        renderProgress();
+
+        const pending = [];
+        for (let i = 0; i < totalChunks; i++) if (!uploaded.has(i)) pending.push(i);
+
+        for (const idx of pending) {
+          if (paused) { log("Paused by user. Session kept for resume."); setStatus("pending"); return; }
+          await withRetry(() => uploadChunk(idx), idx);
+        }
+
+        if (paused) { log("Paused by user."); setStatus("pending"); return; }
+        if (uploaded.size < totalChunks) { log("Some chunks still missing — click Start to resume."); setStatus("pending"); return; }
+
+        await complete();
+      } catch (err) {
+        setStatus("failed");
+        log(`Error: ${err.message}`);
+        saveSession && file && saveSession(fileKey(file), { uploadId, filename: file.name, fileSize: file.size, lastModified: file.lastModified, chunkSize });
+        log("Progress saved — click Start to retry the missing chunks.");
+      } finally {
+        uploading = false;
+        $("uploadBtn").disabled = false;
+        $("pauseBtn").classList.add("hidden");
+        $("resetBtn").disabled = false;
+      }
+    }
+
+    async function withRetry(fn, idx, attempts = 3) {
+      for (let a = 1; a <= attempts; a++) {
+        try { return await fn(); }
+        catch (e) {
+          if (a === attempts) throw e;
+          log(`Chunk ${idx} failed (attempt ${a}) — retrying…`);
+          await new Promise(r => setTimeout(r, 400 * a));
+        }
+      }
+    }
+
+    // ── Controls ─────────────────────────────────────────────────────────────
+    $("uploadBtn").addEventListener("click", runUpload);
+    $("pauseBtn").addEventListener("click", () => { paused = true; });
+    $("resetBtn").addEventListener("click", () => {
+      if (uploading) return;
+      file = null; uploadId = null; uploaded = new Set(); totalChunks = 0;
+      $("file").value = "";
+      $("meta").classList.add("hidden");
+      $("progressWrap").classList.add("hidden");
+      $("resultCard").classList.add("hidden");
+      $("dropTitle").textContent = "Drop a CSV here or click to browse";
+      $("dropSub").textContent = "Only .csv files · processed server-side";
+      $("uploadBtn").disabled = true;
+    });
+
+    // ── Result / data preview ────────────────────────────────────────────────
+    async function showResult(session) {
+      $("resultCard").classList.remove("hidden");
+      $("resTitle").textContent = `✓ ${session.filename}`;
+      $("resSub").textContent = `${session.row_count} row(s) · ${(session.columns || []).length} column(s)`;
+      page = 1; currentSearch = ""; $("search").value = "";
+      await loadData();
+    }
+
+    async function loadData() {
+      if (!uploadId) return;
+      const params = new URLSearchParams({ page, page_size: pageSize, search: currentSearch });
+      const res = await fetch(`${API}/data/${uploadId}?${params}`);
+      const data = await res.json();
+      if (!res.ok) return;
+      columns = data.columns;
+      renderTable(data);
+    }
+
+    function renderTable(data) {
+      const thead = $("dataTable").querySelector("thead");
+      const tbody = $("dataTable").querySelector("tbody");
+      thead.innerHTML = `<tr>${data.columns.map(c => `<th>${escapeHtml(c)}</th>`).join("")}</tr>`;
+      tbody.innerHTML = data.data.map(row =>
+        `<tr>${data.columns.map(c => `<td>${escapeHtml(String(row[c] ?? ""))}</td>`).join("")}</tr>`
+      ).join("") || `<tr><td colspan="${data.columns.length || 1}" style="color:var(--muted)">No rows</td></tr>`;
+      const start = (data.page - 1) * data.page_size + 1;
+      const end = start + data.data.length - 1;
+      $("pageInfo").textContent = data.total ? `${start}–${end} of ${data.total}` : "0 rows";
+      $("prevBtn").disabled = !data.has_prev;
+      $("nextBtn").disabled = !data.has_next;
+    }
+
+    const escapeHtml = (s) => s.replace(/[&<>"']/g, m => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m]));
+
+    $("prevBtn").addEventListener("click", () => { if (page > 1) { page--; loadData(); } });
+    $("nextBtn").addEventListener("click", () => { page++; loadData(); });
+    let searchTimer;
+    $("search").addEventListener("input", (e) => {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => { currentSearch = e.target.value.trim(); page = 1; loadData(); }, 300);
+    });
+
+    // ── Sessions list ────────────────────────────────────────────────────────
+    async function loadSessions() {
+      const el = $("sessions");
+      try {
+        const res = await fetch(`${API}/uploads/`);
+        const list = await res.json();
+        if (!list.length) { el.innerHTML = `<div class="file-meta">No uploads yet.</div>`; return; }
+        el.innerHTML = list.map(s => `
+          <div class="s-row">
+            <div class="fname">
+              <b>${escapeHtml(s.filename)}</b>
+              <small>${fmtBytes(s.file_size)} · ${s.progress_pct}% · ${s.upload_id}</small>
+            </div>
+            <span class="badge s-${s.status}">${s.status}</span>
+          </div>`).join("");
+      } catch { el.innerHTML = `<div class="file-meta">Could not load sessions.</div>`; }
+    }
+    $("refreshBtn").addEventListener("click", loadSessions);
+    loadSessions();
+
+    // ── Hospital bulk processing ─────────────────────────────────────────────
+    let hFile = null;
+    let lastBatchId = null;
+
+    $("hDrop").addEventListener("click", () => $("hFile").click());
+    $("hFile").addEventListener("change", (e) => { if (e.target.files[0]) hSelect(e.target.files[0]); });
+    ["dragenter", "dragover"].forEach(ev => $("hDrop").addEventListener(ev, (e) => { e.preventDefault(); $("hDrop").classList.add("over"); }));
+    ["dragleave", "drop"].forEach(ev => $("hDrop").addEventListener(ev, (e) => { e.preventDefault(); $("hDrop").classList.remove("over"); }));
+    $("hDrop").addEventListener("drop", (e) => { const f = e.dataTransfer.files[0]; if (f) hSelect(f); });
+
+    function hSelect(f) {
+      if (!f.name.toLowerCase().endsWith(".csv")) { alert("Please choose a .csv file."); return; }
+      hFile = f;
+      $("hMeta").classList.remove("hidden");
+      $("hMeta").innerHTML = `<b>${escapeHtml(f.name)}</b> · ${fmtBytes(f.size)}`;
+      $("hDropTitle").textContent = f.name;
+      $("hDropSub").textContent = "Click to choose a different file";
+      $("hProcessBtn").disabled = false;
+      $("hValidateBtn").disabled = false;
+      $("hStatus").textContent = "";
+      $("hResultCard").classList.add("hidden");
+    }
+
+    function setHBadge(status) {
+      const b = $("hBadge");
+      b.textContent = status;
+      b.className = `badge s-${status}`;
+    }
+
+    $("hValidateBtn").addEventListener("click", async () => {
+      if (!hFile) return;
+      $("hStatus").textContent = "Validating…";
+      const form = new FormData(); form.append("file", hFile, hFile.name);
+      const res = await fetch(`${API}/hospitals/bulk/validate`, { method: "POST", body: form });
+      const body = await res.json();
+      if (!res.ok) { $("hStatus").textContent = `Error: ${body.message || res.status}`; return; }
+      if (body.valid) {
+        $("hStatus").innerHTML = `<span style="color:var(--accent-2)">✓ Valid</span> — ${body.valid_rows} row(s), columns: ${body.columns.join(", ")}`;
+      } else {
+        $("hStatus").innerHTML = `<span style="color:var(--danger)">✗ Invalid</span> — ` +
+          body.errors.map(e => `row ${e.row} ${e.field}: ${escapeHtml(e.message)}`).join("; ");
+      }
+    });
+
+    $("hProcessBtn").addEventListener("click", async () => {
+      if (!hFile) return;
+      $("hProcessBtn").disabled = true;
+      $("hValidateBtn").disabled = true;
+      $("hStatus").textContent = "Processing… creating hospitals and activating the batch.";
+      const form = new FormData(); form.append("file", hFile, hFile.name);
+      try {
+        const res = await fetch(`${API}/hospitals/bulk`, { method: "POST", body: form });
+        const body = await res.json();
+        if (!res.ok) {
+          $("hStatus").innerHTML = `<span style="color:var(--danger)">Error:</span> ${escapeHtml(JSON.stringify(body.message || body.detail || res.status))}`;
+          return;
+        }
+        renderBatch(body);
+        $("hStatus").textContent = "";
+      } catch (err) {
+        $("hStatus").innerHTML = `<span style="color:var(--danger)">Error:</span> ${escapeHtml(err.message)}`;
+      } finally {
+        $("hProcessBtn").disabled = false;
+        $("hValidateBtn").disabled = false;
+        loadBatches();
+      }
+    });
+
+    $("hResumeBtn").addEventListener("click", async () => {
+      if (!lastBatchId) return;
+      $("hResumeBtn").disabled = true;
+      $("hStatus").textContent = `Resuming batch ${lastBatchId}…`;
+      try {
+        const res = await fetch(`${API}/hospitals/bulk/${lastBatchId}/resume`, { method: "POST" });
+        const body = await res.json();
+        if (!res.ok) { $("hStatus").textContent = `Error: ${body.message || res.status}`; return; }
+        renderBatch(body);
+        $("hStatus").textContent = "";
+      } finally {
+        $("hResumeBtn").disabled = false;
+        loadBatches();
+      }
+    });
+
+    function renderBatch(body) {
+      lastBatchId = body.batch_id;
+      $("hResultCard").classList.remove("hidden");
+      $("hBatchId").textContent = body.batch_id.slice(0, 8) + "…";
+      $("hBatchId").title = body.batch_id;
+      $("hProcessed").textContent = body.processed_hospitals;
+      $("hTotal").textContent = body.total_hospitals;
+      $("hFailed").textContent = body.failed_hospitals;
+      $("hTime").textContent = body.processing_time_seconds ?? "-";
+      $("hActivated").textContent = body.batch_activated ? "yes" : "no";
+      setHBadge(body.status);
+      $("hResumeBtn").classList.toggle("hidden", body.batch_activated || body.pending_hospitals === 0);
+
+      const thead = $("hTable").querySelector("thead");
+      const tbody = $("hTable").querySelector("tbody");
+      thead.innerHTML = "<tr><th>Row</th><th>Name</th><th>Hospital ID</th><th>Status</th><th>Error</th></tr>";
+      tbody.innerHTML = body.hospitals.map(h => `
+        <tr>
+          <td>${h.row}</td>
+          <td>${escapeHtml(h.name)}</td>
+          <td>${h.hospital_id ?? "-"}</td>
+          <td>${h.status}</td>
+          <td>${h.error ? escapeHtml(h.error) : ""}</td>
+        </tr>`).join("");
+    }
+
+    async function loadBatches() {
+      const el = $("hBatches");
+      try {
+        const res = await fetch(`${API}/hospitals/batches`);
+        const list = await res.json();
+        if (!list.length) { el.innerHTML = `<div class="file-meta">No batches yet.</div>`; return; }
+        el.innerHTML = list.map(b => `
+          <div class="s-row">
+            <div class="fname">
+              <b>${escapeHtml(b.filename)}</b>
+              <small>${b.processed_hospitals}/${b.total_hospitals} processed · ${b.failed_hospitals} failed · ${b.batch_id.slice(0, 8)}…</small>
+            </div>
+            <div class="row">
+              <span class="badge s-${b.status}">${b.status}</span>
+              <button class="ghost" data-resume="${b.batch_id}" ${b.batch_activated || b.pending_hospitals === 0 ? "disabled" : ""}>Resume</button>
+            </div>
+          </div>`).join("");
+        el.querySelectorAll("button[data-resume]").forEach(btn => {
+          btn.addEventListener("click", async () => {
+            btn.disabled = true;
+            const res = await fetch(`${API}/hospitals/bulk/${btn.dataset.resume}/resume`, { method: "POST" });
+            const body = await res.json();
+            if (res.ok) renderBatch(body);
+            loadBatches();
+          });
+        });
+      } catch { el.innerHTML = `<div class="file-meta">Could not load batches.</div>`; }
+    }
+    $("hRefresh").addEventListener("click", loadBatches);
+    loadBatches();
+  </script>
+</body>
+</html>
