@@ -6,7 +6,7 @@ batch ID, and activates the batch once every hospital has been created.
 Progress can be followed live over Server-Sent Events, and a batch that fails
 part-way can be resumed without creating duplicate hospitals.
 
-- **Live URL:** `https://<your-service>.onrender.com` (UI at `/`, Swagger at `/docs`)
+- **Live URL:** <https://hospital-bulk-processing-5wrn.onrender.com> (UI at `/`, Swagger at `/docs`)
 - **Stack:** Python 3.11, FastAPI, httpx, in-memory storage, Docker
 
 ---

@@ -61,7 +61,7 @@ def create_app() -> FastAPI:
     if static_dir.is_dir():
         app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
-        @app.get("/", include_in_schema=False)
+        @app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
         async def index() -> FileResponse:
             return FileResponse(static_dir / "index.html")
 
