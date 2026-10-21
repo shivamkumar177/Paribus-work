@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: hospital-bulk-processing
+    runtime: docker
+    plan: free
+    healthCheckPath: /health/
+    autoDeploy: true
+    envVars:
+      - key: ENVIRONMENT
+        value: production

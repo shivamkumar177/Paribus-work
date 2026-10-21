@@ -1,0 +1,9 @@
+services:
+  api:
+    build: .
+    ports:
+      - "${HOST_PORT:-8000}:8000"
+    environment:
+      ENVIRONMENT: docker
+      HOSPITAL_API_BASE_URL: https://hospital-directory.onrender.com
+    restart: unless-stopped
