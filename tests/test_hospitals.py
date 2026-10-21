@@ -1,7 +1,11 @@
+import json
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.main import app
+from app.services.hospital_client import HospitalAPIError
+from app.storage.memory import store
 
 VALID_CSV = (
     "name,address,phone\n"
@@ -16,6 +20,8 @@ class FakeHospitalClient:
 
     def __init__(self, fail_names=()):
         self.fail_names = set(fail_names)
+        self.lost_response_names: set[str] = set()  # written upstream, but the caller sees an error
+        self.activation_down = False
         self.created: list[dict] = []
         self.activated: list[str] = []
         self._next_id = 100
@@ -23,12 +29,22 @@ class FakeHospitalClient:
     def create_hospital(self, payload: dict) -> dict:
         if payload["name"] in self.fail_names:
             raise RuntimeError(f"directory rejected {payload['name']}")
-        self.created.append(payload)
         self._next_id += 1
-        return {"id": self._next_id, "name": payload["name"], "active": False,
-                "creation_batch_id": payload["creation_batch_id"]}
+        hospital = {**payload, "id": self._next_id, "active": False}
+        self.created.append(hospital)
+        if payload["name"] in self.lost_response_names:
+            raise RuntimeError("read timeout")
+        return hospital
+
+    def get_batch(self, batch_id: str) -> list:
+        found = [h for h in self.created if h["creation_batch_id"] == batch_id]
+        if not found:
+            raise HospitalAPIError("not found", status_code=404)
+        return found
 
     def activate_batch(self, batch_id: str) -> dict:
+        if self.activation_down:
+            raise HospitalAPIError("activation down", status_code=503)
         self.activated.append(batch_id)
         return {"batch_id": batch_id, "activated": True}
 
@@ -52,7 +68,7 @@ def _files(data: bytes, name="hospitals.csv"):
 
 @pytest.mark.asyncio
 async def test_validate_valid_csv(client, fake):
-    res = await client.post("/api/v1/hospitals/bulk/validate", files=_files(VALID_CSV))
+    res = await client.post("/hospitals/bulk/validate", files=_files(VALID_CSV))
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["valid"] is True
@@ -63,7 +79,7 @@ async def test_validate_valid_csv(client, fake):
 @pytest.mark.asyncio
 async def test_validate_missing_required_column(client, fake):
     bad = b"name,phone\nGeneral,555-1234\n"
-    res = await client.post("/api/v1/hospitals/bulk/validate", files=_files(bad))
+    res = await client.post("/hospitals/bulk/validate", files=_files(bad))
     assert res.status_code == 200
     body = res.json()
     assert body["valid"] is False
@@ -72,7 +88,7 @@ async def test_validate_missing_required_column(client, fake):
 
 @pytest.mark.asyncio
 async def test_bulk_create_activates_batch(client, fake):
-    res = await client.post("/api/v1/hospitals/bulk", files=_files(VALID_CSV))
+    res = await client.post("/hospitals/bulk", files=_files(VALID_CSV))
     assert res.status_code == 201, res.text
     body = res.json()
 
@@ -95,7 +111,7 @@ async def test_bulk_create_activates_batch(client, fake):
 async def test_bulk_partial_then_resume(client, fake):
     fake.fail_names = {"City Clinic"}
 
-    first = (await client.post("/api/v1/hospitals/bulk", files=_files(VALID_CSV))).json()
+    first = (await client.post("/hospitals/bulk", files=_files(VALID_CSV))).json()
     assert first["status"] == "partial"
     assert first["failed_hospitals"] == 1
     assert first["batch_activated"] is False
@@ -105,7 +121,7 @@ async def test_bulk_partial_then_resume(client, fake):
     fake.fail_names = set()
     created_before = len(fake.created)
 
-    resumed = (await client.post(f"/api/v1/hospitals/bulk/{first['batch_id']}/resume")).json()
+    resumed = (await client.post(f"/hospitals/bulk/{first['batch_id']}/resume")).json()
     assert resumed["status"] == "completed"
     assert resumed["failed_hospitals"] == 0
     assert resumed["batch_activated"] is True
@@ -114,8 +130,8 @@ async def test_bulk_partial_then_resume(client, fake):
 
 @pytest.mark.asyncio
 async def test_status_endpoint(client, fake):
-    created = (await client.post("/api/v1/hospitals/bulk", files=_files(VALID_CSV))).json()
-    res = await client.get(f"/api/v1/hospitals/bulk/{created['batch_id']}")
+    created = (await client.post("/hospitals/bulk", files=_files(VALID_CSV))).json()
+    res = await client.get(f"/hospitals/bulk/{created['batch_id']}")
     assert res.status_code == 200
     assert res.json()["batch_id"] == created["batch_id"]
 
@@ -123,11 +139,108 @@ async def test_status_endpoint(client, fake):
 @pytest.mark.asyncio
 async def test_too_many_hospitals_rejected(client, fake, monkeypatch):
     monkeypatch.setattr("app.services.hospital_service.settings.BULK_MAX_HOSPITALS", 2)
-    res = await client.post("/api/v1/hospitals/bulk", files=_files(VALID_CSV))
+    res = await client.post("/hospitals/bulk", files=_files(VALID_CSV))
     assert res.status_code == 422
 
 
 @pytest.mark.asyncio
 async def test_non_csv_rejected(client, fake):
-    res = await client.post("/api/v1/hospitals/bulk", files=_files(VALID_CSV, name="hospitals.txt"))
+    res = await client.post("/hospitals/bulk", files=_files(VALID_CSV, name="hospitals.txt"))
     assert res.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_resume_does_not_duplicate_rows_written_upstream(client, fake, monkeypatch):
+    # City Clinic is written upstream, but every attempt "times out" (incl. retries).
+    monkeypatch.setattr("app.services.hospital_service.settings.HOSPITAL_API_MAX_RETRIES", 0)
+    fake.lost_response_names = {"City Clinic"}
+
+    first = (await client.post("/hospitals/bulk", files=_files(VALID_CSV))).json()
+    assert first["status"] == "partial"
+    assert first["batch_activated"] is False
+
+    fake.lost_response_names = set()
+    resumed = (await client.post(f"/hospitals/bulk/{first['batch_id']}/resume")).json()
+
+    assert resumed["status"] == "completed"
+    assert resumed["batch_activated"] is True
+    assert sum(1 for h in fake.created if h["name"] == "City Clinic") == 1  # matched, not re-created
+    city = next(h for h in resumed["hospitals"] if h["name"] == "City Clinic")
+    assert city["hospital_id"] is not None
+
+
+@pytest.mark.asyncio
+async def test_resume_retries_activation_only(client, fake):
+    fake.activation_down = True
+    first = (await client.post("/hospitals/bulk", files=_files(VALID_CSV))).json()
+    assert first["status"] == "partial"
+    assert first["processed_hospitals"] == 3
+    assert first["batch_activated"] is False
+
+    fake.activation_down = False
+    created_before = len(fake.created)
+
+    resumed = (await client.post(f"/hospitals/bulk/{first['batch_id']}/resume")).json()
+    assert resumed["status"] == "completed"
+    assert resumed["batch_activated"] is True
+    assert len(fake.created) == created_before  # nothing re-created
+
+
+@pytest.mark.asyncio
+async def test_resume_rejected_while_batch_is_running(client, fake):
+    fake.fail_names = {"City Clinic"}
+    first = (await client.post("/hospitals/bulk", files=_files(VALID_CSV))).json()
+
+    store.update_batch(first["batch_id"], status="processing")  # simulate an in-flight run
+    res = await client.post(f"/hospitals/bulk/{first['batch_id']}/resume")
+    assert res.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_resume_unknown_batch_returns_404(client, fake):
+    res = await client.post("/hospitals/bulk/does-not-exist/resume")
+    assert res.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_bulk_no_wait_returns_202_then_finishes_in_background(client, fake):
+    res = await client.post("/hospitals/bulk?wait=false", files=_files(VALID_CSV))
+    assert res.status_code == 202, res.text
+    accepted = res.json()
+    assert accepted["status"] == "processing"
+    assert accepted["batch_activated"] is False
+
+    # The test transport runs background tasks before returning, so the batch is done by now.
+    status = (await client.get(f"/hospitals/bulk/{accepted['batch_id']}")).json()
+    assert status["status"] == "completed"
+    assert status["batch_activated"] is True
+
+
+@pytest.mark.asyncio
+async def test_events_stream_sends_batch_and_closes_when_finished(client, fake):
+    created = (await client.post("/hospitals/bulk", files=_files(VALID_CSV))).json()
+
+    res = await client.get(f"/hospitals/bulk/{created['batch_id']}/events")
+    assert res.status_code == 200
+    assert res.headers["content-type"].startswith("text/event-stream")
+    events = [line[len("data: "):] for line in res.text.splitlines() if line.startswith("data: ")]
+    assert len(events) == 1
+    last = json.loads(events[-1])
+    assert last["status"] == "completed"
+    assert last["processed_hospitals"] == 3
+
+
+@pytest.mark.asyncio
+async def test_events_unknown_batch_returns_404(client, fake):
+    res = await client.get("/hospitals/bulk/does-not-exist/events")
+    assert res.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_resume_no_wait_rejected_while_batch_is_running(client, fake):
+    fake.fail_names = {"City Clinic"}
+    first = (await client.post("/hospitals/bulk", files=_files(VALID_CSV))).json()
+
+    store.update_batch(first["batch_id"], status="processing")
+    res = await client.post(f"/hospitals/bulk/{first['batch_id']}/resume?wait=false")
+    assert res.status_code == 409

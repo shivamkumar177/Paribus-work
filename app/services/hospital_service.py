@@ -9,7 +9,8 @@ Flow (mirrors the assignment):
   5. return a comprehensive result
 
 Progress is recorded per row in the in-memory store, so a long job can be polled
-and *resumed* (only rows that are not yet `created` are retried).
+and *resumed*: only rows that are not yet `created` are retried, after first
+checking the directory for rows that were written but never acknowledged.
 """
 
 import time
@@ -21,7 +22,7 @@ from fastapi import HTTPException
 from app.core.config import settings
 from app.core.logging import logger
 from app.services.csv_parser import parse_csv
-from app.services.hospital_client import hospital_client
+from app.services.hospital_client import HospitalAPIError, hospital_client
 from app.storage.memory import BatchJob, RowResult, store
 
 REQUIRED_COLUMNS = ("name", "address")
@@ -127,18 +128,68 @@ def _create_one(batch_id: str, result: RowResult) -> None:
     logger.warning(f"[bulk] Row {result.row} failed after retries: {last_error}")
 
 
-def process_batch(batch_id: str) -> BatchJob:
-    """Run / resume processing for a batch. Safe to call repeatedly."""
+def _reconcile_with_directory(batch_id: str, targets: list[RowResult]) -> None:
+    """Mark rows the directory already holds for this batch as created."""
+    try:
+        existing = hospital_client.get_batch(batch_id)
+    except HospitalAPIError as exc:
+        if exc.status_code == 404:  # directory has no hospitals for this batch yet
+            return
+        raise
+
+    job = store.get_batch(batch_id)
+    claimed = {r.hospital_id for r in job.results if r.hospital_id is not None}
+    for result in targets:
+        match = next(
+            (
+                h for h in existing
+                if h["id"] not in claimed
+                and h["name"] == result.payload["name"]
+                and h["address"] == result.payload["address"]
+            ),
+            None,
+        )
+        if match:
+            claimed.add(match["id"])
+            store.set_row_result(batch_id, result.row, status="created", hospital_id=match["id"], error=None)
+            logger.info(f"[bulk] Row {result.row} already exists upstream as id={match['id']} — not re-creating")
+
+
+def claim_for_processing(batch_id: str) -> bool:
+    """Mark a batch as processing. Returns False if it is already finished; 404/409 otherwise."""
     job = store.get_batch(batch_id)
     if not job:
         raise HTTPException(status_code=404, detail=f"Batch '{batch_id}' not found")
     if job.batch_activated and not job.pending_results():
-        return job
+        return False
+    if not store.claim_batch(batch_id):
+        raise HTTPException(status_code=409, detail=f"Batch '{batch_id}' is already being processed")
+    return True
 
+
+def process_batch(batch_id: str) -> BatchJob:
+    """Run / resume a batch and wait for it to finish. Safe to call repeatedly."""
+    if claim_for_processing(batch_id):
+        run_batch(batch_id)
+    return store.get_batch(batch_id)
+
+
+def run_batch(batch_id: str) -> None:
+    """Create the batch's unfinished rows, then activate. The batch must already be claimed."""
+    job = store.get_batch(batch_id)
     started = time.perf_counter()
-    store.update_batch(batch_id, status="processing", error=None)
-
     targets = job.pending_results()
+
+    # On resume, a "failed" row may still exist upstream (e.g. the request timed out
+    # after the hospital was written). Match those first so a retry never duplicates them.
+    if any(r.status == "failed" for r in targets):
+        try:
+            _reconcile_with_directory(batch_id, targets)
+        except Exception as exc:  # noqa: BLE001 - never retry blind
+            store.update_batch(batch_id, status=_outcome_status(job), error=f"Could not check existing hospitals: {exc}")
+            return
+        targets = job.pending_results()
+
     if targets:
         with ThreadPoolExecutor(max_workers=settings.HOSPITAL_API_CONCURRENCY) as pool:
             futures = [pool.submit(_create_one, batch_id, result) for result in targets]
@@ -155,28 +206,28 @@ def process_batch(batch_id: str) -> BatchJob:
             store.mark_batch_activated(batch_id)
             logger.info(f"[bulk] Batch {batch_id} activated ({job.total_hospitals} hospitals)")
         except Exception as exc:  # noqa: BLE001
-            store.update_batch(batch_id, status="partial", error=f"Batch activation failed: {exc}")
+            store.update_batch(
+                batch_id,
+                status="partial",
+                error=f"Batch activation failed: {exc}",
+                processing_time_seconds=round(time.perf_counter() - started, 2),
+            )
             logger.error(f"[bulk] Batch {batch_id} activation failed: {exc}")
-            job = store.get_batch(batch_id)
-            job.processing_time_seconds = round(time.perf_counter() - started, 2)
-            return job
-
-    job = store.get_batch(batch_id)
-    failed = job.failed_count()
-    if failed and job.processed_count() == 0:
-        status = "failed"
-    elif failed:
-        status = "partial"
-    else:
-        status = "completed"
+            return
 
     store.update_batch(
         batch_id,
-        status=status,
+        status=_outcome_status(job),
         processing_time_seconds=round(time.perf_counter() - started, 2),
         completed_at=datetime.now(timezone.utc),
     )
-    return store.get_batch(batch_id)
+
+
+def _outcome_status(job: BatchJob) -> str:
+    failed = job.failed_count()
+    if failed and job.processed_count() == 0:
+        return "failed"
+    return "partial" if failed else "completed"
 
 
 # ── Serialization ─────────────────────────────────────────────────────────────

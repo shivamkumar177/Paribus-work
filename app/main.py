@@ -54,7 +54,7 @@ def create_app() -> FastAPI:
     app.add_exception_handler(Exception, generic_exception_handler)
 
     # ── Routers ───────────────────────────────────────────────────────────────
-    app.include_router(api_router, prefix=settings.API_V1_PREFIX)
+    app.include_router(api_router)
 
     # ── Frontend ──────────────────────────────────────────────────────────────
     static_dir = Path(__file__).parent / "static"
