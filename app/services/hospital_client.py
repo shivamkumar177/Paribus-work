@@ -46,9 +46,6 @@ class HospitalClient:
     def create_hospital(self, payload: dict) -> dict:
         return self._request("POST", "/hospitals/", json=payload)
 
-    def list_hospitals(self) -> Any:
-        return self._request("GET", "/hospitals/")
-
     # ── Batch operations ──────────────────────────────────────────────────────
 
     def get_batch(self, batch_id: str) -> Any:
@@ -56,9 +53,6 @@ class HospitalClient:
 
     def activate_batch(self, batch_id: str) -> Any:
         return self._request("PATCH", f"/hospitals/batch/{batch_id}/activate")
-
-    def delete_batch(self, batch_id: str) -> Any:
-        return self._request("DELETE", f"/hospitals/batch/{batch_id}")
 
     # ── Internals ─────────────────────────────────────────────────────────────
 
